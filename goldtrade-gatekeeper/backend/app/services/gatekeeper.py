@@ -33,20 +33,24 @@ def evaluate(
     strict_mode: bool = False,
 ) -> dict[str, Any]:
 
-    dt: datetime = state.server_time or datetime.now(timezone.utc)
+    # ── Safe time handling ─────────────────
+    dt = state.server_time or datetime.now(timezone.utc)
     if isinstance(dt, str):
-        dt = datetime.fromisoformat(dt)
+        try:
+            dt = datetime.fromisoformat(dt)
+        except:
+            dt = datetime.now(timezone.utc)
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
 
-    blocks: list[str] = []
+    blocks = []
 
-    # ── Session ─────────────────────────
+    # ── Session ───────────────────────────
     session_name, session_ok = get_session(dt)
     if not session_ok:
         blocks.append("OUTSIDE SESSION")
 
-    # ── News ────────────────────────────
+    # ── News ──────────────────────────────
     news_blocked, news_names = is_in_news_window(
         state.news_events or [],
         dt,
@@ -55,7 +59,7 @@ def evaluate(
     if news_blocked:
         blocks.append(f"NEWS WINDOW — {', '.join(news_names)}")
 
-    # ── DXY Bias ────────────────────────
+    # ── DXY Bias ──────────────────────────
     raw_bias, bias_detail = compute_dxy_bias(state.dxy_candles or [])
 
     prior_biases = get_recent_bias_history(db, limit=STABILITY_CANDLES - 1)
@@ -63,15 +67,15 @@ def evaluate(
         raw_bias, prior_biases, required_count=STABILITY_CANDLES
     )
 
-    # ✅ Early + confirmed bias logic
+    # SAFE bias handling
     if bias_confirmed:
         bias = stable_bias
     else:
-        bias = raw_bias if raw_bias != "NEUTRAL" else "NEUTRAL"
+        bias = raw_bias if raw_bias else "NEUTRAL"
 
-    bias_pending = raw_bias != "NEUTRAL" and not bias_confirmed
+    bias_pending = bool(raw_bias) and not bias_confirmed
 
-    # ── Volatility ──────────────────────
+    # ── Volatility ────────────────────────
     atr_current = state.atr_current or 0.0
     atr_avg     = state.atr_avg or 0.0
 
@@ -89,11 +93,11 @@ def evaluate(
     vol_state = raw_vol_state
 
     if not raw_vol_ok:
-        blocks.append("LOW VOLATILITY — ATR below threshold")
+        blocks.append("LOW VOLATILITY")
     elif not vol_confirmed:
         blocks.append("VOLATILITY UNCONFIRMED")
 
-    # ── Risk ────────────────────────────
+    # ── Risk ──────────────────────────────
     risk_ok, risk_blocks, risk_info = check_risk_limits(
         db,
         max_trades=settings.MAX_TRADES_PER_DAY,
@@ -101,7 +105,7 @@ def evaluate(
     )
     blocks.extend(risk_blocks)
 
-    # ── Decision ────────────────────────
+    # ── Decision ──────────────────────────
     if blocks:
         decision = DECISION_UNFAVORABLE
         reasons = blocks
@@ -114,7 +118,7 @@ def evaluate(
             f"Risk: {risk_info['trades_today']}/{settings.MAX_TRADES_PER_DAY}"
         ]
 
-    # ── Metrics ─────────────────────────
+    # ── Metrics ───────────────────────────
     metrics = {
         "atr": atr_current,
         "atr_avg": atr_avg,
@@ -128,7 +132,7 @@ def evaluate(
         "dxy_price": state.dxy_price
     }
 
-    # ── Advisory ────────────────────────
+    # ── Advisory ──────────────────────────
     advisory = generate_advisory(
         session=session_name,
         vol_state=vol_state,
@@ -137,25 +141,29 @@ def evaluate(
         strict_mode=strict_mode,
     )
 
-    # ── FINAL BIAS (DXY PRIORITY) ───────
-    if "SELL" in bias:
+    # ── FINAL BIAS (SAFE) ─────────────────
+    bias_str = str(bias) if bias is not None else ""
+
+    if "SELL" in bias_str:
         final_bias = "SELL"
-    elif "BUY" in bias:
+    elif "BUY" in bias_str:
         final_bias = "BUY"
     else:
         final_bias = "NEUTRAL"
 
-    # ── Entry + Decision ────────────────
+    # ── SAFE candles handling ─────────────
+    candles = state.xauusd_candles if isinstance(state.xauusd_candles, list) else []
+
     entry_zone = get_entry_zone(
         state.xauusd_price or 0,
-        state.xauusd_candles or []
+        candles
     )
 
     env_ok = vol_confirmed and session_name in ["NEW_YORK", "LONDON"]
 
     trade_decision = get_trade_decision(env_ok, final_bias, entry_zone)
 
-    # ── Logging ─────────────────────────
+    # ── Logging ───────────────────────────
     log_entry = DecisionLog(
         decision=decision,
         bias=bias,
