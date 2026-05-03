@@ -1,19 +1,3 @@
-"""
-Trade Gatekeeper — Final Decision Engine
-─────────────────────────────────────────
-Orchestrates all rule modules.  CONDITIONS FAVORABLE only when ALL gates pass:
-  1. Session valid
-  2. Not in news window
-  3. Volatility = EXPANSION  (stable across ≥ STABILITY_CANDLES)
-  4. Risk limits OK
-
-DXY bias uses momentum filter (breakout candle range > avg range) and must
-persist across ≥ STABILITY_CANDLES evaluations before being considered confirmed.
-
-Writes an immutable DecisionLog row after every evaluation.
-"""
-
-
 from app.services.decision_engine import (
     get_dxy_bias,
     get_structure_bias,
@@ -21,8 +5,6 @@ from app.services.decision_engine import (
     get_entry_zone,
     get_trade_decision
 )
-
-
 
 from datetime import datetime, timezone
 from sqlalchemy.orm import Session
@@ -42,16 +24,13 @@ from .state_stability  import (
 from ..config          import settings
 from ..models          import MarketState, DecisionLog
 
-# ── UI-facing labels (back-end values stay internal for DB/CSV integrity) ────
 DECISION_FAVORABLE   = "CONDITIONS FAVORABLE"
 DECISION_UNFAVORABLE = "CONDITIONS UNFAVORABLE"
 DECISION_NO_TRADE    = "NO TRADE"
 
-# Kept for backward-compat imports from tests
 DECISION_ALLOWED = DECISION_FAVORABLE
 DECISION_BLOCKED = DECISION_UNFAVORABLE
 
-# How many consecutive evaluations a state must persist before confirming
 STABILITY_CANDLES = 2
 
 
@@ -60,9 +39,7 @@ def evaluate(
     state: MarketState,
     strict_mode: bool = False,
 ) -> dict[str, Any]:
-    """Run all gates and return structured decision payload."""
 
-    # ── Resolve server time ───────────────────────────────────────────────────
     dt: datetime = state.server_time or datetime.now(timezone.utc)
     if isinstance(dt, str):
         dt = datetime.fromisoformat(dt)
@@ -71,12 +48,10 @@ def evaluate(
 
     blocks: list[str] = []
 
-    # ── Gate 1: Session ───────────────────────────────────────────────────────
     session_name, session_ok = get_session(dt)
     if not session_ok:
         blocks.append("OUTSIDE SESSION")
 
-    # ── Gate 2: News ──────────────────────────────────────────────────────────
     news_blocked, news_names = is_in_news_window(
         state.news_events or [],
         dt,
@@ -86,29 +61,27 @@ def evaluate(
         events_str = ", ".join(news_names)
         blocks.append(f"NEWS WINDOW — {events_str}")
 
-    # ── Gate 3: DXY Bias — momentum-filtered + stability-confirmed ────────────
     raw_bias, bias_detail = compute_dxy_bias(state.dxy_candles or [])
 
-    # Pull recent bias history to check persistence
     prior_biases = get_recent_bias_history(db, limit=STABILITY_CANDLES - 1)
     stable_bias, bias_confirmed = require_persistence(
         raw_bias, prior_biases, required_count=STABILITY_CANDLES
     )
-    # Use confirmed bias for advisory; unconfirmed shows as NEUTRAL in display
+
     bias = stable_bias if bias_confirmed else "NEUTRAL"
     bias_pending = raw_bias != "NEUTRAL" and not bias_confirmed
 
-    # ── Gate 4: Volatility — with stability check ─────────────────────────────
     atr_current: float = state.atr_current or 0.0
     atr_avg:     float = state.atr_avg or 0.0
     multiplier = settings.ATR_EXPANSION_MULTIPLIER * (1.2 if strict_mode else 1.0)
+
     raw_vol_state, raw_vol_ok = check_volatility_expansion(atr_current, atr_avg, multiplier)
 
     prior_vols = get_recent_vol_history(db, limit=STABILITY_CANDLES - 1)
     _, vol_confirmed = require_persistence(
         raw_vol_state, prior_vols, required_count=STABILITY_CANDLES
     )
-    # Volatility must both be EXPANSION and have held for required candles
+
     vol_state = raw_vol_state
     vol_ok = raw_vol_ok and vol_confirmed
 
@@ -120,7 +93,6 @@ def evaluate(
             f"{STABILITY_CANDLES} consecutive candles (stability check)"
         )
 
-    # ── Gate 5: Risk limits ───────────────────────────────────────────────────
     risk_ok, risk_blocks, risk_info = check_risk_limits(
         db,
         max_trades=settings.MAX_TRADES_PER_DAY,
@@ -128,7 +100,6 @@ def evaluate(
     )
     blocks.extend(risk_blocks)
 
-    # ── Final verdict ─────────────────────────────────────────────────────────
     if blocks:
         decision = DECISION_UNFAVORABLE
         reasons  = blocks
@@ -161,7 +132,6 @@ def evaluate(
         "stability_candles": STABILITY_CANDLES,
     }
 
-    # ── Advisory (non-controlling) ────────────────────────────────────────────
     advisory = generate_advisory(
         session=session_name,
         vol_state=vol_state,
@@ -170,7 +140,30 @@ def evaluate(
         strict_mode=strict_mode,
     )
 
-    # ── Persist audit log ─────────────────────────────────────────────────────
+    # =========================
+    # NEW DECISION ENGINE LAYER
+    # =========================
+
+    xau_candles = state.xauusd_candles or []
+    dxy_candles = state.dxy_candles or []
+
+    dxy_bias = get_dxy_bias(dxy_candles)
+    structure_bias = get_structure_bias(xau_candles)
+    final_bias = get_final_bias(dxy_bias, structure_bias)
+
+    entry_zone = get_entry_zone(
+        state.xauusd_price or 0,
+        xau_candles
+    )
+
+    env_ok = (
+        vol_confirmed and session_name in ["NEW_YORK", "LONDON"]
+    )
+
+    trade_decision = get_trade_decision(env_ok, final_bias, entry_zone)
+
+    # =========================
+
     log_entry = DecisionLog(
         decision=decision,
         bias=bias,
@@ -185,7 +178,12 @@ def evaluate(
 
     return {
         "decision":  decision,
-        "bias":      bias,
+
+        # NEW OUTPUTS
+        "trade_decision": trade_decision,
+        "bias": final_bias,
+        "entry_zone": entry_zone,
+
         "reasons":   reasons,
         "metrics":   metrics,
         "advisory":  advisory,
