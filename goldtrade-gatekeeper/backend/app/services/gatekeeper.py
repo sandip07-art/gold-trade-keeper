@@ -155,18 +155,12 @@ def evaluate(db: Session, state: MarketState, strict_mode: bool = False) -> dict
                 ob_near_fvg = True
 
         # ── ENTRY TYPE ─────────────────
+    
         if fvg:
-            if (final_bias == "SELL" and "BEARISH" in fvg["type"]) or \
-               (final_bias == "BUY" and "BULLISH" in fvg["type"]):
-                entry_type = "FVG"
-            else:
-                entry_type = "CONFIRMATION"
+            entry_type = "FVG"
+            entry_instruction = f"{fvg['type']} zone {fvg['zone']}"
         else:
             entry_type = "CONFIRMATION"
-
-        if entry_type == "FVG":
-            entry_instruction = f"Use {fvg['type']} zone {fvg['zone']}"
-        else:
             entry_instruction = "Wait for candle confirmation"
 
         # ── CONFIDENCE ─────────────────
