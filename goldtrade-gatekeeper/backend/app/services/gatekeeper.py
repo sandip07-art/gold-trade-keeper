@@ -156,6 +156,9 @@ def evaluate(db: Session, state: MarketState, strict_mode: bool = False) -> dict
             if not (o_high < f_low or o_low > f_high):
                 ob_near_fvg = True
 
+        # ── CONFIRMATION ─────────────────
+        confirmation_valid, confirmation_type = detect_confirmation(xau_candles, final_bias)
+
         # ── ENTRY TYPE ─────────────────
     
         if fvg:
@@ -206,12 +209,15 @@ def evaluate(db: Session, state: MarketState, strict_mode: bool = False) -> dict
                 aligned = True
 
         if aligned:
-            if vol_level == "HIGH":
-                trade_decision = "TRADE"
-            elif vol_level == "MEDIUM":
-                trade_decision = "TRADE (REDUCED RISK)"
+            if not confirmation_valid:
+                trade_decision = "WAIT (NO CONFIRMATION)"
             else:
-                trade_decision = "WAIT"
+                if vol_level == "HIGH":
+                    trade_decision = "TRADE"
+                elif vol_level == "MEDIUM":
+                    trade_decision = "TRADE (REDUCED RISK)"
+                else:
+                    trade_decision = "WAIT"
         else:
             trade_decision = "NO TRADE"
 
@@ -250,6 +256,10 @@ def evaluate(db: Session, state: MarketState, strict_mode: bool = False) -> dict
                 "ob_nearby": ob_near_fvg
             },
             "confidence": confidence,
+            "confirmation": {
+                "valid": confirmation_valid,
+                "type": confirmation_type
+            },
             "reasons": reasons,
             "log_id": log_id,
             "timestamp": timestamp,
