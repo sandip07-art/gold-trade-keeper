@@ -12,6 +12,18 @@ persist across ≥ STABILITY_CANDLES evaluations before being considered confirm
 
 Writes an immutable DecisionLog row after every evaluation.
 """
+
+
+from app.services.decision_engine import (
+    get_dxy_bias,
+    get_structure_bias,
+    get_final_bias,
+    get_entry_zone,
+    get_trade_decision
+)
+
+
+
 from datetime import datetime, timezone
 from sqlalchemy.orm import Session
 from typing import Any
