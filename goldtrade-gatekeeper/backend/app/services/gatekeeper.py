@@ -143,7 +143,8 @@ def evaluate(db: Session, state: MarketState, strict_mode: bool = False) -> dict
 
         # ── FVG ─────────────────
         fvg = detect_fvg(xau_candles)
-
+        print("DEBUG FVG:", fvg)
+        
         # ── OB ─────────────────
         ob = detect_ob(xau_candles)
 
