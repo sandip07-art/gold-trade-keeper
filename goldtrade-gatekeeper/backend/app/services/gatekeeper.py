@@ -78,7 +78,7 @@ def evaluate(db: Session, state: MarketState, strict_mode: bool = False) -> dict
             raw_bias, prior_biases, required_count=2
         )
 
-        bias = stable_bias if bias_confirmed else (raw_bias or "NEUTRAL")
+        bias = raw_bias if raw_bias else "NEUTRAL"
 
         # ── VOLATILITY ─────────────────
         atr_current = safe_float(state.atr_current)
@@ -92,11 +92,10 @@ def evaluate(db: Session, state: MarketState, strict_mode: bool = False) -> dict
             raw_vol_state, get_recent_vol_history(db, limit=1), required_count=2
         )
 
-        if not raw_vol_ok:
-            blocks.append("LOW VOLATILITY")
-        elif not vol_confirmed:
-            blocks.append("VOLATILITY UNCONFIRMED")
-
+        low_vol_flag = not raw_vol_ok
+            
+        # REMOVE volatility confirmed blocking
+        
         # ── RISK ─────────────────
         risk_ok, risk_blocks, risk_info = check_risk_limits(
             db,
@@ -116,7 +115,9 @@ def evaluate(db: Session, state: MarketState, strict_mode: bool = False) -> dict
                 f"Volatility: {raw_vol_state}",
                 f"DXY Bias: {bias}",
             ]
-
+        
+            if low_vol_flag:
+                reasons.append("LOW VOLATILITY (CAUTION)")
         # ── FINAL BIAS (SAFE) ─────────────────
         bias_str = str(bias)
 
@@ -160,6 +161,10 @@ def evaluate(db: Session, state: MarketState, strict_mode: bool = False) -> dict
         else:
             trade_decision = "NO TRADE"
 
+        # 🔥 FORCE CONSISTENCY WITH ENVIRONMENT
+        if decision == DECISION_UNFAVORABLE:
+            trade_decision = "NO TRADE"
+        
 
 
         # ── LOGGING ─────────────────
