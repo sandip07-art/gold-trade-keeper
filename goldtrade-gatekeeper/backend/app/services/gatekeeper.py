@@ -72,7 +72,8 @@ def evaluate(
     bias = stable_bias
 else:
     bias = raw_bias if raw_bias != "NEUTRAL" else "NEUTRAL"
-    bias_pending = raw_bias != "NEUTRAL" and not bias_confirmed
+
+bias_pending = raw_bias != "NEUTRAL" and not bias_confirmed
 
     atr_current: float = state.atr_current or 0.0
     atr_avg:     float = state.atr_avg or 0.0
