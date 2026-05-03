@@ -78,7 +78,9 @@ def evaluate(db: Session, state: MarketState, strict_mode: bool = False) -> dict
             raw_bias, prior_biases, required_count=2
         )
 
-        # 🔥 FALLBACK MOMENTUM BIAS
+
+        # 🔥 SMART BIAS FALLBACK (handles 1 candle too)
+        
         if raw_bias and raw_bias != "NEUTRAL":
             bias = raw_bias
         else:
@@ -92,6 +94,16 @@ def evaluate(db: Session, state: MarketState, strict_mode: bool = False) -> dict
                     bias = "USD WEAK → GOLD BUY"
                 else:
                     bias = "NEUTRAL"
+        
+            elif len(dxy_candles) == 1:
+                candle = dxy_candles[-1]
+                if candle["close"] > candle["open"]:
+                    bias = "USD STRONG → GOLD SELL"
+                elif candle["close"] < candle["open"]:
+                    bias = "USD WEAK → GOLD BUY"
+                else:
+                    bias = "NEUTRAL"
+        
             else:
                 bias = "NEUTRAL"
 
@@ -178,8 +190,9 @@ def evaluate(db: Session, state: MarketState, strict_mode: bool = False) -> dict
 
         # 🔥 FORCE CONSISTENCY WITH ENVIRONMENT
         if decision == DECISION_UNFAVORABLE:
-            trade_decision = "NO TRADE"
-        
+            if trade_decision == "TRADE":
+                trade_decision = "WAIT"
+                
 
 
         # ── LOGGING ─────────────────
