@@ -1,7 +1,4 @@
 from app.services.decision_engine import (
-    get_dxy_bias,
-    get_structure_bias,
-    get_final_bias,
     get_entry_zone,
     get_trade_decision
 )
@@ -26,10 +23,6 @@ from ..models          import MarketState, DecisionLog
 
 DECISION_FAVORABLE   = "CONDITIONS FAVORABLE"
 DECISION_UNFAVORABLE = "CONDITIONS UNFAVORABLE"
-DECISION_NO_TRADE    = "NO TRADE"
-
-DECISION_ALLOWED = DECISION_FAVORABLE
-DECISION_BLOCKED = DECISION_UNFAVORABLE
 
 STABILITY_CANDLES = 2
 
@@ -48,20 +41,21 @@ def evaluate(
 
     blocks: list[str] = []
 
+    # ── Session ─────────────────────────
     session_name, session_ok = get_session(dt)
     if not session_ok:
         blocks.append("OUTSIDE SESSION")
 
+    # ── News ────────────────────────────
     news_blocked, news_names = is_in_news_window(
         state.news_events or [],
         dt,
         window_minutes=settings.NEWS_WINDOW_MINUTES,
     )
     if news_blocked:
-        events_str = ", ".join(news_names)
-        blocks.append(f"NEWS WINDOW — {events_str}")
+        blocks.append(f"NEWS WINDOW — {', '.join(news_names)}")
 
-    # ── DXY Bias (FIXED) ─────────────────
+    # ── DXY Bias ────────────────────────
     raw_bias, bias_detail = compute_dxy_bias(state.dxy_candles or [])
 
     prior_biases = get_recent_bias_history(db, limit=STABILITY_CANDLES - 1)
@@ -69,6 +63,7 @@ def evaluate(
         raw_bias, prior_biases, required_count=STABILITY_CANDLES
     )
 
+    # ✅ Early + confirmed bias logic
     if bias_confirmed:
         bias = stable_bias
     else:
@@ -77,8 +72,8 @@ def evaluate(
     bias_pending = raw_bias != "NEUTRAL" and not bias_confirmed
 
     # ── Volatility ──────────────────────
-    atr_current: float = state.atr_current or 0.0
-    atr_avg:     float = state.atr_avg or 0.0
+    atr_current = state.atr_current or 0.0
+    atr_avg     = state.atr_avg or 0.0
 
     multiplier = settings.ATR_EXPANSION_MULTIPLIER * (1.2 if strict_mode else 1.0)
 
@@ -92,15 +87,11 @@ def evaluate(
     )
 
     vol_state = raw_vol_state
-    vol_ok = raw_vol_ok and vol_confirmed
 
     if not raw_vol_ok:
-        blocks.append("LOW VOLATILITY — ATR below expansion threshold")
+        blocks.append("LOW VOLATILITY — ATR below threshold")
     elif not vol_confirmed:
-        blocks.append(
-            f"VOLATILITY UNCONFIRMED — {raw_vol_state} seen but requires "
-            f"{STABILITY_CANDLES} consecutive candles (stability check)"
-        )
+        blocks.append("VOLATILITY UNCONFIRMED")
 
     # ── Risk ────────────────────────────
     risk_ok, risk_blocks, risk_info = check_risk_limits(
@@ -118,32 +109,26 @@ def evaluate(
         decision = DECISION_FAVORABLE
         reasons = [
             f"Session: {session_name}",
-            f"Volatility: {vol_state} (confirmed {STABILITY_CANDLES} candles)",
-            f"DXY Bias: {bias}" + (" (confirmed)" if bias_confirmed else " (early)"),
-            f"Risk: {risk_info['trades_today']}/{settings.MAX_TRADES_PER_DAY} trades today",
+            f"Volatility: {vol_state}",
+            f"DXY Bias: {bias}",
+            f"Risk: {risk_info['trades_today']}/{settings.MAX_TRADES_PER_DAY}"
         ]
 
     # ── Metrics ─────────────────────────
     metrics = {
-        "atr": round(atr_current, 4),
-        "atr_avg": round(atr_avg, 4),
-        "atr_ratio": round(atr_current / atr_avg, 3) if atr_avg else 0,
+        "atr": atr_current,
+        "atr_avg": atr_avg,
         "dxy_state": bias,
         "dxy_raw": raw_bias,
         "dxy_confirmed": bias_confirmed,
         "dxy_pending": bias_pending,
-        "dxy_momentum": bias_detail,
-        "session": session_name,
-        "vol_state": vol_state,
         "vol_confirmed": vol_confirmed,
-        "trades_today": risk_info["trades_today"],
-        "daily_loss_pct": risk_info["daily_loss_pct"],
+        "session": session_name,
         "xauusd_price": state.xauusd_price,
-        "dxy_price": state.dxy_price,
-        "strict_mode": strict_mode,
-        "stability_candles": STABILITY_CANDLES,
+        "dxy_price": state.dxy_price
     }
 
+    # ── Advisory ────────────────────────
     advisory = generate_advisory(
         session=session_name,
         vol_state=vol_state,
@@ -152,22 +137,19 @@ def evaluate(
         strict_mode=strict_mode,
     )
 
-    # ── NEW DECISION ENGINE ─────────────
-    xau_candles = state.xauusd_candles or []
-    dxy_candles = state.dxy_candles or []
+    # ── FINAL BIAS (DXY PRIORITY) ───────
+    if "SELL" in bias:
+        final_bias = "SELL"
+    elif "BUY" in bias:
+        final_bias = "BUY"
+    else:
+        final_bias = "NEUTRAL"
 
-    dxy_bias = get_dxy_bias(dxy_candles)
-    structure_bias = get_structure_bias(xau_candles)
-    
-    # PRIORITIZE DXY (macro driver)
-if "SELL" in bias:
-    final_bias = "SELL"
-elif "BUY" in bias:
-    final_bias = "BUY"
-else:
-    final_bias = "NEUTRAL"
-
-    entry_zone = get_entry_zone(state.xauusd_price or 0, xau_candles)
+    # ── Entry + Decision ────────────────
+    entry_zone = get_entry_zone(
+        state.xauusd_price or 0,
+        state.xauusd_candles or []
+    )
 
     env_ok = vol_confirmed and session_name in ["NEW_YORK", "LONDON"]
 
