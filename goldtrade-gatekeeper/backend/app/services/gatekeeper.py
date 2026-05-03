@@ -78,7 +78,22 @@ def evaluate(db: Session, state: MarketState, strict_mode: bool = False) -> dict
             raw_bias, prior_biases, required_count=2
         )
 
-        bias = raw_bias if raw_bias else "NEUTRAL"
+        # 🔥 FALLBACK MOMENTUM BIAS
+        if raw_bias and raw_bias != "NEUTRAL":
+            bias = raw_bias
+        else:
+            if len(dxy_candles) >= 2:
+                prev = dxy_candles[-2]["close"]
+                curr = dxy_candles[-1]["close"]
+        
+                if curr > prev:
+                    bias = "USD STRONG → GOLD SELL"
+                elif curr < prev:
+                    bias = "USD WEAK → GOLD BUY"
+                else:
+                    bias = "NEUTRAL"
+            else:
+                bias = "NEUTRAL"
 
         # ── VOLATILITY ─────────────────
         atr_current = safe_float(state.atr_current)
