@@ -4,6 +4,7 @@ from app.services.decision_engine import (
 
 from .fvg import detect_fvg
 from .ob import detect_ob
+from .confirmation import detect_confirmation
 
 from datetime import datetime, timezone
 from sqlalchemy.orm import Session
