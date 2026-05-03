@@ -159,6 +159,8 @@ def evaluate(db: Session, state: MarketState, strict_mode: bool = False) -> dict
         # ── CONFIRMATION ─────────────────
         confirmation_valid, confirmation_type = detect_confirmation(xau_candles, final_bias)
 
+    
+        
         # ── ENTRY TYPE ─────────────────
     
         if fvg:
@@ -221,6 +223,27 @@ def evaluate(db: Session, state: MarketState, strict_mode: bool = False) -> dict
         else:
             trade_decision = "NO TRADE"
 
+        # ── EXECUTION CHECKLIST ─────────────────
+        if trade_decision == "NO TRADE":
+            checklist_status = "SKIP"
+            checklist_action = "No valid setup — do not trade"
+        
+        elif trade_decision.startswith("WAIT"):
+            if fvg:
+                checklist_status = "WAIT"
+                checklist_action = "Wait for price to return to FVG zone and confirm"
+            else:
+                checklist_status = "WAIT"
+                checklist_action = "Wait for confirmation candle"
+        
+        elif trade_decision == "TRADE":
+            checklist_status = "READY"
+            checklist_action = "All conditions met — execute trade"
+        
+        else:
+            checklist_status = "WAIT"
+            checklist_action = "Monitor market"
+
         # ── SAFE OVERRIDE ─────────────────
         if decision == DECISION_UNFAVORABLE and trade_decision == "TRADE":
             trade_decision = "WAIT"
@@ -259,6 +282,10 @@ def evaluate(db: Session, state: MarketState, strict_mode: bool = False) -> dict
             "confirmation": {
                 "valid": confirmation_valid,
                 "type": confirmation_type
+            },
+            "execution_checklist": {
+            "status": checklist_status,
+            "action": checklist_action
             },
             "reasons": reasons,
             "log_id": log_id,
