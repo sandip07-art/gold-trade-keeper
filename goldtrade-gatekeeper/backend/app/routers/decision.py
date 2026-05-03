@@ -1,3 +1,13 @@
+from fastapi import APIRouter, Depends, Query
+from sqlalchemy.orm import Session
+
+from ..database import get_db
+from ..models import MarketState
+from ..services.gatekeeper import evaluate
+
+router = APIRouter(tags=["decision"])
+
+
 @router.get("/decision")
 def get_decision(
     strict_mode: bool = Query(False),
@@ -12,24 +22,15 @@ def get_decision(
                 "trade_decision": "NO TRADE",
                 "bias": "NEUTRAL",
                 "entry_zone": "UNKNOWN",
-                "reasons": ["No data in DB"]
+                "reasons": ["No market data found"]
             }
 
-        try:
-            result = evaluate(db, state, strict_mode=strict_mode)
-            return result
-        except Exception as e:
-            return {
-                "decision": "EVALUATE CRASH",
-                "trade_decision": "NO TRADE",
-                "bias": "NEUTRAL",
-                "entry_zone": "UNKNOWN",
-                "reasons": [f"evaluate failed: {str(e)}"]
-            }
+        result = evaluate(db, state, strict_mode=strict_mode)
+        return result
 
     except Exception as e:
         return {
-            "decision": "ROUTE CRASH",
+            "decision": "ERROR SAFE MODE",
             "trade_decision": "NO TRADE",
             "bias": "NEUTRAL",
             "entry_zone": "UNKNOWN",
