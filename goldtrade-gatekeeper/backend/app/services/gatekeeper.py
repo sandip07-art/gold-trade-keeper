@@ -1,9 +1,9 @@
-# FORCE REDEPLOY v2
-
 from app.services.decision_engine import (
     get_entry_zone,
-    get_trade_decision
 )
+
+from .fvg import detect_fvg
+from .ob import detect_ob
 
 from datetime import datetime, timezone
 from sqlalchemy.orm import Session
@@ -14,7 +14,6 @@ from .news_blocker     import is_in_news_window
 from .dxy_bias         import compute_dxy_bias
 from .volatility       import check_volatility_expansion
 from .risk_enforcer    import check_risk_limits
-from .advisory         import generate_advisory
 from .state_stability  import (
     require_persistence,
     get_recent_bias_history,
@@ -40,7 +39,7 @@ def safe_float(val):
 
 def evaluate(db: Session, state: MarketState, strict_mode: bool = False) -> dict[str, Any]:
     try:
-        # ── SAFE TIME ─────────────────
+        # ── TIME ─────────────────
         dt = state.server_time or datetime.now(timezone.utc)
         if isinstance(dt, str):
             try:
@@ -66,65 +65,56 @@ def evaluate(db: Session, state: MarketState, strict_mode: bool = False) -> dict
         if news_blocked:
             blocks.append(f"NEWS WINDOW — {', '.join(news_names)}")
 
-        # ── SAFE CANDLES ─────────────────
+        # ── DATA ─────────────────
         xau_candles = safe_list(state.xauusd_candles)
         dxy_candles = safe_list(state.dxy_candles)
 
-        # ── DXY BIAS ─────────────────
-        raw_bias, bias_detail = compute_dxy_bias(dxy_candles)
+        # ── BIAS ─────────────────
+        raw_bias, _ = compute_dxy_bias(dxy_candles)
 
-        prior_biases = get_recent_bias_history(db, limit=1)
-        stable_bias, bias_confirmed = require_persistence(
-            raw_bias, prior_biases, required_count=2
-        )
-
-
-        # 🔥 SMART BIAS FALLBACK (handles 1 candle too)
-        
         if raw_bias and raw_bias != "NEUTRAL":
             bias = raw_bias
         else:
             if len(dxy_candles) >= 2:
                 prev = dxy_candles[-2]["close"]
                 curr = dxy_candles[-1]["close"]
-        
                 if curr > prev:
                     bias = "USD STRONG → GOLD SELL"
                 elif curr < prev:
                     bias = "USD WEAK → GOLD BUY"
                 else:
                     bias = "NEUTRAL"
-        
             elif len(dxy_candles) == 1:
-                candle = dxy_candles[-1]
-                if candle["close"] > candle["open"]:
+                c = dxy_candles[-1]
+                if c["close"] > c["open"]:
                     bias = "USD STRONG → GOLD SELL"
-                elif candle["close"] < candle["open"]:
+                elif c["close"] < c["open"]:
                     bias = "USD WEAK → GOLD BUY"
                 else:
                     bias = "NEUTRAL"
-        
             else:
                 bias = "NEUTRAL"
 
+        # ── FINAL BIAS ─────────────────
+        if "SELL" in bias:
+            final_bias = "SELL"
+        elif "BUY" in bias:
+            final_bias = "BUY"
+        else:
+            final_bias = "NEUTRAL"
+
         # ── VOLATILITY ─────────────────
         atr_current = safe_float(state.atr_current)
-        atr_avg     = safe_float(state.atr_avg)
+        atr_avg = safe_float(state.atr_avg)
 
         raw_vol_state, raw_vol_ok = check_volatility_expansion(
             atr_current, atr_avg, settings.ATR_EXPANSION_MULTIPLIER
         )
 
-        _, vol_confirmed = require_persistence(
-            raw_vol_state, get_recent_vol_history(db, limit=1), required_count=2
-        )
-
         low_vol_flag = not raw_vol_ok
-            
-        # REMOVE volatility confirmed blocking
-        
+
         # ── RISK ─────────────────
-        risk_ok, risk_blocks, risk_info = check_risk_limits(
+        _, risk_blocks, _ = check_risk_limits(
             db,
             max_trades=settings.MAX_TRADES_PER_DAY,
             max_daily_loss_pct=settings.MAX_DAILY_LOSS_PCT,
@@ -142,26 +132,52 @@ def evaluate(db: Session, state: MarketState, strict_mode: bool = False) -> dict
                 f"Volatility: {raw_vol_state}",
                 f"DXY Bias: {bias}",
             ]
-        
             if low_vol_flag:
                 reasons.append("LOW VOLATILITY (CAUTION)")
-        # ── FINAL BIAS (SAFE) ─────────────────
-        bias_str = str(bias)
 
-        if "SELL" in bias_str:
-            final_bias = "SELL"
-        elif "BUY" in bias_str:
-            final_bias = "BUY"
-        else:
-            final_bias = "NEUTRAL"
-
-        # ── ENTRY ─────────────────
+        # ── ENTRY ZONE ─────────────────
         entry_zone = get_entry_zone(
             safe_float(state.xauusd_price),
             xau_candles
         )
-        # ── ADAPTIVE DECISION ENGINE ──        
 
+        # ── FVG ─────────────────
+        fvg = detect_fvg(xau_candles)
+
+        # ── OB ─────────────────
+        ob = detect_ob(xau_candles)
+
+        ob_near_fvg = False
+        if fvg and ob:
+            f_low, f_high = fvg["zone"]
+            o_low, o_high = ob["zone"]
+            if not (o_high < f_low or o_low > f_high):
+                ob_near_fvg = True
+
+        # ── ENTRY TYPE ─────────────────
+        if fvg:
+            if (final_bias == "SELL" and "BEARISH" in fvg["type"]) or \
+               (final_bias == "BUY" and "BULLISH" in fvg["type"]):
+                entry_type = "FVG"
+            else:
+                entry_type = "CONFIRMATION"
+        else:
+            entry_type = "CONFIRMATION"
+
+        if entry_type == "FVG":
+            entry_instruction = f"Use {fvg['type']} zone {fvg['zone']}"
+        else:
+            entry_instruction = "Wait for candle confirmation"
+
+        # ── CONFIDENCE ─────────────────
+        if fvg and ob_near_fvg:
+            confidence = "HIGH"
+        elif fvg:
+            confidence = "MEDIUM"
+        else:
+            confidence = "LOW"
+
+        # ── ADAPTIVE ENGINE ─────────────────
         if atr_avg == 0:
             vol_level = "LOW"
         else:
@@ -188,18 +204,15 @@ def evaluate(db: Session, state: MarketState, strict_mode: bool = False) -> dict
         else:
             trade_decision = "NO TRADE"
 
-        # 🔥 FORCE CONSISTENCY WITH ENVIRONMENT
-        if decision == DECISION_UNFAVORABLE:
-            if trade_decision == "TRADE":
-                trade_decision = "WAIT"
-                
+        # ── SAFE OVERRIDE ─────────────────
+        if decision == DECISION_UNFAVORABLE and trade_decision == "TRADE":
+            trade_decision = "WAIT"
 
-
-        # ── LOGGING ─────────────────
+        # ── LOG ─────────────────
         try:
             log_entry = DecisionLog(
                 decision=decision,
-                bias=bias,
+                bias=final_bias,
                 reasons=reasons,
                 metrics={},
                 advisory={},
@@ -219,18 +232,31 @@ def evaluate(db: Session, state: MarketState, strict_mode: bool = False) -> dict
             "trade_decision": trade_decision,
             "bias": final_bias,
             "entry_zone": entry_zone,
+            "entry_type": entry_type,
+            "entry_instruction": entry_instruction,
+            "confluence": {
+                "fvg": fvg is not None,
+                "ob_nearby": ob_near_fvg
+            },
+            "confidence": confidence,
             "reasons": reasons,
             "log_id": log_id,
             "timestamp": timestamp,
         }
 
     except Exception as e:
-        # 🔥 NEVER CRASH
         return {
             "decision": "ERROR SAFE MODE",
             "trade_decision": "NO TRADE",
             "bias": "NEUTRAL",
             "entry_zone": "UNKNOWN",
+            "entry_type": "UNKNOWN",
+            "entry_instruction": "SYSTEM ERROR",
+            "confluence": {
+                "fvg": False,
+                "ob_nearby": False
+            },
+            "confidence": "LOW",
             "reasons": [str(e)],
             "log_id": None,
             "timestamp": datetime.now(timezone.utc).isoformat(),
