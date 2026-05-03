@@ -61,6 +61,7 @@ def evaluate(
         events_str = ", ".join(news_names)
         blocks.append(f"NEWS WINDOW — {events_str}")
 
+    # ── DXY Bias (FIXED) ─────────────────
     raw_bias, bias_detail = compute_dxy_bias(state.dxy_candles or [])
 
     prior_biases = get_recent_bias_history(db, limit=STABILITY_CANDLES - 1)
@@ -69,17 +70,21 @@ def evaluate(
     )
 
     if bias_confirmed:
-    bias = stable_bias
-else:
-    bias = raw_bias if raw_bias != "NEUTRAL" else "NEUTRAL"
+        bias = stable_bias
+    else:
+        bias = raw_bias if raw_bias != "NEUTRAL" else "NEUTRAL"
 
-bias_pending = raw_bias != "NEUTRAL" and not bias_confirmed
+    bias_pending = raw_bias != "NEUTRAL" and not bias_confirmed
 
+    # ── Volatility ──────────────────────
     atr_current: float = state.atr_current or 0.0
     atr_avg:     float = state.atr_avg or 0.0
+
     multiplier = settings.ATR_EXPANSION_MULTIPLIER * (1.2 if strict_mode else 1.0)
 
-    raw_vol_state, raw_vol_ok = check_volatility_expansion(atr_current, atr_avg, multiplier)
+    raw_vol_state, raw_vol_ok = check_volatility_expansion(
+        atr_current, atr_avg, multiplier
+    )
 
     prior_vols = get_recent_vol_history(db, limit=STABILITY_CANDLES - 1)
     _, vol_confirmed = require_persistence(
@@ -97,6 +102,7 @@ bias_pending = raw_bias != "NEUTRAL" and not bias_confirmed
             f"{STABILITY_CANDLES} consecutive candles (stability check)"
         )
 
+    # ── Risk ────────────────────────────
     risk_ok, risk_blocks, risk_info = check_risk_limits(
         db,
         max_trades=settings.MAX_TRADES_PER_DAY,
@@ -104,35 +110,37 @@ bias_pending = raw_bias != "NEUTRAL" and not bias_confirmed
     )
     blocks.extend(risk_blocks)
 
+    # ── Decision ────────────────────────
     if blocks:
         decision = DECISION_UNFAVORABLE
-        reasons  = blocks
+        reasons = blocks
     else:
         decision = DECISION_FAVORABLE
-        reasons  = [
+        reasons = [
             f"Session: {session_name}",
             f"Volatility: {vol_state} (confirmed {STABILITY_CANDLES} candles)",
-            f"DXY Bias: {bias}" + (" (confirmed)" if bias_confirmed else ""),
+            f"DXY Bias: {bias}" + (" (confirmed)" if bias_confirmed else " (early)"),
             f"Risk: {risk_info['trades_today']}/{settings.MAX_TRADES_PER_DAY} trades today",
         ]
 
+    # ── Metrics ─────────────────────────
     metrics = {
-        "atr":              round(atr_current, 4),
-        "atr_avg":          round(atr_avg, 4),
-        "atr_ratio":        round(atr_current / atr_avg, 3) if atr_avg else 0,
-        "dxy_state":        bias,
-        "dxy_raw":          raw_bias,
-        "dxy_confirmed":    bias_confirmed,
-        "dxy_pending":      bias_pending,
-        "dxy_momentum":     bias_detail,
-        "session":          session_name,
-        "vol_state":        vol_state,
-        "vol_confirmed":    vol_confirmed,
-        "trades_today":     risk_info["trades_today"],
-        "daily_loss_pct":   risk_info["daily_loss_pct"],
-        "xauusd_price":     state.xauusd_price,
-        "dxy_price":        state.dxy_price,
-        "strict_mode":      strict_mode,
+        "atr": round(atr_current, 4),
+        "atr_avg": round(atr_avg, 4),
+        "atr_ratio": round(atr_current / atr_avg, 3) if atr_avg else 0,
+        "dxy_state": bias,
+        "dxy_raw": raw_bias,
+        "dxy_confirmed": bias_confirmed,
+        "dxy_pending": bias_pending,
+        "dxy_momentum": bias_detail,
+        "session": session_name,
+        "vol_state": vol_state,
+        "vol_confirmed": vol_confirmed,
+        "trades_today": risk_info["trades_today"],
+        "daily_loss_pct": risk_info["daily_loss_pct"],
+        "xauusd_price": state.xauusd_price,
+        "dxy_price": state.dxy_price,
+        "strict_mode": strict_mode,
         "stability_candles": STABILITY_CANDLES,
     }
 
@@ -144,10 +152,7 @@ bias_pending = raw_bias != "NEUTRAL" and not bias_confirmed
         strict_mode=strict_mode,
     )
 
-    # =========================
-    # NEW DECISION ENGINE LAYER
-    # =========================
-
+    # ── NEW DECISION ENGINE ─────────────
     xau_candles = state.xauusd_candles or []
     dxy_candles = state.dxy_candles or []
 
@@ -155,19 +160,13 @@ bias_pending = raw_bias != "NEUTRAL" and not bias_confirmed
     structure_bias = get_structure_bias(xau_candles)
     final_bias = get_final_bias(dxy_bias, structure_bias)
 
-    entry_zone = get_entry_zone(
-        state.xauusd_price or 0,
-        xau_candles
-    )
+    entry_zone = get_entry_zone(state.xauusd_price or 0, xau_candles)
 
-    env_ok = (
-        vol_confirmed and session_name in ["NEW_YORK", "LONDON"]
-    )
+    env_ok = vol_confirmed and session_name in ["NEW_YORK", "LONDON"]
 
     trade_decision = get_trade_decision(env_ok, final_bias, entry_zone)
 
-    # =========================
-
+    # ── Logging ─────────────────────────
     log_entry = DecisionLog(
         decision=decision,
         bias=bias,
@@ -181,16 +180,13 @@ bias_pending = raw_bias != "NEUTRAL" and not bias_confirmed
     db.refresh(log_entry)
 
     return {
-        "decision":  decision,
-
-        # NEW OUTPUTS
+        "decision": decision,
         "trade_decision": trade_decision,
         "bias": final_bias,
         "entry_zone": entry_zone,
-
-        "reasons":   reasons,
-        "metrics":   metrics,
-        "advisory":  advisory,
-        "log_id":    log_entry.id,
+        "reasons": reasons,
+        "metrics": metrics,
+        "advisory": advisory,
+        "log_id": log_entry.id,
         "timestamp": log_entry.timestamp.isoformat(),
     }
