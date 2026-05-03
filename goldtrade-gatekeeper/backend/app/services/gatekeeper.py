@@ -132,39 +132,35 @@ def evaluate(db: Session, state: MarketState, strict_mode: bool = False) -> dict
             safe_float(state.xauusd_price),
             xau_candles
         )
+        # ── ADAPTIVE DECISION ENGINE ──        
 
-        env_ok = vol_confirmed and session_name in ["NEW_YORK", "LONDON"]
+        if atr_avg == 0:
+            vol_level = "LOW"
+        else:
+            ratio = atr_current / atr_avg
+            if ratio > 2:
+                vol_level = "HIGH"
+            elif ratio > 1.2:
+                vol_level = "MEDIUM"
+            else:
+                vol_level = "LOW"
 
-        # ── ADAPTIVE DECISION ENGINE ──
+        aligned = (
+            (final_bias == "SELL" and entry_zone == "PREMIUM") or
+            (final_bias == "BUY" and entry_zone == "DISCOUNT")
+        )
 
-# classify volatility
-if atr_avg == 0:
-    vol_level = "LOW"
-else:
-    ratio = atr_current / atr_avg
-    if ratio > 2:
-        vol_level = "HIGH"
-    elif ratio > 1.2:
-        vol_level = "MEDIUM"
-    else:
-        vol_level = "LOW"
+        if aligned:
+            if vol_level == "HIGH":
+                trade_decision = "TRADE"
+            elif vol_level == "MEDIUM":
+                trade_decision = "TRADE (REDUCED RISK)"
+            else:
+                trade_decision = "WAIT"
+        else:
+            trade_decision = "NO TRADE"
 
-# alignment check
-aligned = (
-    (final_bias == "SELL" and entry_zone == "PREMIUM") or
-    (final_bias == "BUY" and entry_zone == "DISCOUNT")
-)
 
-# decision logic
-if aligned:
-    if vol_level == "HIGH":
-        trade_decision = "TRADE"
-    elif vol_level == "MEDIUM":
-        trade_decision = "TRADE (REDUCED RISK)"
-    else:
-        trade_decision = "WAIT"
-else:
-    trade_decision = "NO TRADE"
 
         # ── LOGGING ─────────────────
         try:
