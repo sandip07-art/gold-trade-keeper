@@ -159,7 +159,10 @@ def evaluate(db: Session, state: MarketState, strict_mode: bool = False) -> dict
     
         if fvg:
             entry_type = "FVG"
-            entry_instruction = f"{fvg['type']} zone {fvg['zone']}"
+            entry_instruction = (
+                f"Wait for price to return to {fvg['type']} zone {fvg['zone']} "
+                f"and confirm with engulfing or rejection candle"
+            )
         else:
             entry_type = "CONFIRMATION"
             entry_instruction = "Wait for candle confirmation"
@@ -185,9 +188,21 @@ def evaluate(db: Session, state: MarketState, strict_mode: bool = False) -> dict
                 vol_level = "LOW"
 
         aligned = (
-            (final_bias == "SELL" and entry_zone == "PREMIUM") or
-            (final_bias == "BUY" and entry_zone == "DISCOUNT")
+        (final_bias == "SELL" and entry_zone == "PREMIUM") or
+        (final_bias == "BUY" and entry_zone == "DISCOUNT")
         )
+    
+        # 🔥 Allow FVG override (controlled flexibility)
+        fvg_aligned = (
+            fvg and (
+                ("BEARISH" in fvg["type"] and final_bias == "SELL") or
+                ("BULLISH" in fvg["type"] and final_bias == "BUY")
+            )
+        )
+        
+        if not aligned and fvg_aligned:
+            if vol_level != "LOW":   # avoid weak conditions
+                aligned = True
 
         if aligned:
             if vol_level == "HIGH":
