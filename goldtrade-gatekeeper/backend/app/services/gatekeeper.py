@@ -158,7 +158,14 @@ def evaluate(
 
     dxy_bias = get_dxy_bias(dxy_candles)
     structure_bias = get_structure_bias(xau_candles)
-    final_bias = get_final_bias(dxy_bias, structure_bias)
+    
+    # PRIORITIZE DXY (macro driver)
+if "SELL" in bias:
+    final_bias = "SELL"
+elif "BUY" in bias:
+    final_bias = "BUY"
+else:
+    final_bias = "NEUTRAL"
 
     entry_zone = get_entry_zone(state.xauusd_price or 0, xau_candles)
 
