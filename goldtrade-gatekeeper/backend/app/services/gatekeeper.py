@@ -15,11 +15,6 @@ from .news_blocker     import is_in_news_window
 from .dxy_bias         import compute_dxy_bias
 from .volatility       import check_volatility_expansion
 from .risk_enforcer    import check_risk_limits
-from .state_stability  import (
-    require_persistence,
-    get_recent_bias_history,
-    get_recent_vol_history,
-)
 from ..config          import settings
 from ..models          import MarketState, DecisionLog
 
@@ -96,7 +91,6 @@ def evaluate(db: Session, state: MarketState, strict_mode: bool = False) -> dict
             else:
                 bias = "NEUTRAL"
 
-        # ── FINAL BIAS ─────────────────
         if "SELL" in bias:
             final_bias = "SELL"
         elif "BUY" in bias:
@@ -104,7 +98,7 @@ def evaluate(db: Session, state: MarketState, strict_mode: bool = False) -> dict
         else:
             final_bias = "NEUTRAL"
 
-        # ── VOLATILITY ─────────────────
+        # ── VOLATILITY (kept for info only) ─────────────────
         atr_current = safe_float(state.atr_current)
         atr_avg = safe_float(state.atr_avg)
 
@@ -144,8 +138,7 @@ def evaluate(db: Session, state: MarketState, strict_mode: bool = False) -> dict
 
         # ── FVG ─────────────────
         fvg = detect_fvg(xau_candles)
-        print("DEBUG FVG:", fvg)
-        
+
         # ── OB ─────────────────
         ob = detect_ob(xau_candles)
 
@@ -159,10 +152,7 @@ def evaluate(db: Session, state: MarketState, strict_mode: bool = False) -> dict
         # ── CONFIRMATION ─────────────────
         confirmation_valid, confirmation_type = detect_confirmation(xau_candles, final_bias)
 
-    
-        
         # ── ENTRY TYPE ─────────────────
-    
         if fvg:
             entry_type = "FVG"
             entry_instruction = (
@@ -181,53 +171,49 @@ def evaluate(db: Session, state: MarketState, strict_mode: bool = False) -> dict
         else:
             confidence = "LOW"
 
-        # ── ADAPTIVE ENGINE ─────────────────
-        if atr_avg == 0:
-            vol_level = "LOW"
-        else:
-            ratio = atr_current / atr_avg
-            if ratio > 2:
-                vol_level = "HIGH"
-            elif ratio > 1.2:
-                vol_level = "MEDIUM"
-            else:
-                vol_level = "LOW"
-
+        # ── ALIGNMENT ─────────────────
         aligned = (
-        (final_bias == "SELL" and entry_zone == "PREMIUM") or
-        (final_bias == "BUY" and entry_zone == "DISCOUNT")
+            (final_bias == "SELL" and entry_zone == "PREMIUM") or
+            (final_bias == "BUY" and entry_zone == "DISCOUNT")
         )
-    
-        # 🔥 Allow FVG override (controlled flexibility)
+
         fvg_aligned = (
             fvg and (
                 ("BEARISH" in fvg["type"] and final_bias == "SELL") or
                 ("BULLISH" in fvg["type"] and final_bias == "BUY")
             )
         )
-        
-        if not aligned and fvg_aligned:
-            if vol_level != "LOW":   # avoid weak conditions
-                aligned = True
 
+        if not aligned and fvg_aligned:
+            aligned = True
+
+        # ── TRADE DECISION (FINAL CORRECT LOGIC) ─────────────────
         if aligned:
             if not confirmation_valid:
                 trade_decision = "WAIT (NO CONFIRMATION)"
             else:
-                if vol_level == "HIGH":
+                if confidence == "HIGH":
                     trade_decision = "TRADE"
-                elif vol_level == "MEDIUM":
+                elif confidence == "MEDIUM":
                     trade_decision = "TRADE (REDUCED RISK)"
                 else:
                     trade_decision = "WAIT"
         else:
             trade_decision = "NO TRADE"
 
+        # ── SAFE OVERRIDE (CORRECT POSITION) ─────────────────
+        if decision == DECISION_UNFAVORABLE and "TRADE" in trade_decision:
+            trade_decision = "WAIT"
+
         # ── EXECUTION CHECKLIST ─────────────────
-        if trade_decision == "NO TRADE":
+        if decision == DECISION_UNFAVORABLE:
+            checklist_status = "SKIP"
+            checklist_action = "Blocked by system conditions — do not trade"
+
+        elif trade_decision == "NO TRADE":
             checklist_status = "SKIP"
             checklist_action = "No valid setup — do not trade"
-        
+
         elif trade_decision.startswith("WAIT"):
             if fvg:
                 checklist_status = "WAIT"
@@ -235,18 +221,14 @@ def evaluate(db: Session, state: MarketState, strict_mode: bool = False) -> dict
             else:
                 checklist_status = "WAIT"
                 checklist_action = "Wait for confirmation candle"
-        
-        elif trade_decision == "TRADE":
+
+        elif "TRADE" in trade_decision:
             checklist_status = "READY"
             checklist_action = "All conditions met — execute trade"
-        
+
         else:
             checklist_status = "WAIT"
             checklist_action = "Monitor market"
-
-        # ── SAFE OVERRIDE ─────────────────
-        if decision == DECISION_UNFAVORABLE and trade_decision == "TRADE":
-            trade_decision = "WAIT"
 
         # ── LOG ─────────────────
         try:
@@ -284,8 +266,8 @@ def evaluate(db: Session, state: MarketState, strict_mode: bool = False) -> dict
                 "type": confirmation_type
             },
             "execution_checklist": {
-            "status": checklist_status,
-            "action": checklist_action
+                "status": checklist_status,
+                "action": checklist_action
             },
             "reasons": reasons,
             "log_id": log_id,
